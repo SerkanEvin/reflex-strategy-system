@@ -17,10 +17,50 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 from shared.models import (
-    LocalState, WebSocketMessage, MessageType, StrategyPolicy, SpatialMemoryEntry
+    LocalState, WebSocketMessage, MessageType, StrategyPolicy, SpatialMemoryEntry,
+    PlayerState, Detection, BoundingBox, DetectionType, SecurityTier
 )
 from vps.database import SpatialDatabase
 from vps.strategist import Strategist
+
+
+def _parse_local_state(state_dict: Dict) -> LocalState:
+    """Parse state dictionary to LocalState with proper nested dataclasses."""
+    # Parse nested PlayerState
+    player_dict = state_dict.get("player", {})
+    player = PlayerState(**player_dict)
+
+    # Parse detections
+    detections = []
+    for det_dict in state_dict.get("detections", []):
+        # Parse nested BoundingBox
+        bbox_dict = det_dict.get("bbox", {})
+        bbox = BoundingBox(**bbox_dict)
+
+        # Parse detection type if string
+        det_type = DetectionType(det_dict.get("detection_type", "other"))
+
+        detection = Detection(
+            bbox=bbox,
+            detection_type=det_type,
+            label=det_dict.get("label", ""),
+            confidence=det_dict.get("confidence", 0.0),
+            distance=det_dict.get("distance"),
+            health_percent=det_dict.get("health_percent")
+        )
+        detections.append(detection)
+
+    # Parse security tier if string
+    security_tier = SecurityTier(state_dict.get("security_tier", 2))
+
+    return LocalState(
+        timestamp=state_dict.get("timestamp", 0.0),
+        player=player,
+        detections=detections,
+        security_tier=security_tier,
+        active_targets=state_dict.get("active_targets", []),
+        frame_id=state_dict.get("frame_id", 0)
+    )
 
 
 # Pydantic models for REST API endpoints
@@ -307,9 +347,9 @@ class VPSBrainServer:
             message: State update message.
         """
         try:
-            # Parse local state
+            # Parse local state with proper nested dataclass conversion
             state_dict = message.payload
-            state = LocalState(**state_dict)
+            state = _parse_local_state(state_dict)
 
             # Feed to strategist for analysis
             policy = await self.strategist.analyze_and_decide(state)
@@ -460,7 +500,7 @@ class VPSBrainServer:
     async def request_strategy(self, request: StrategyRequest):
         """Request strategy for current state."""
         try:
-            state = LocalState(**request.state)
+            state = _parse_local_state(request.state)
             policy = await self.strategist.analyze_and_decide(state)
 
             if request.force_update and policy is None:

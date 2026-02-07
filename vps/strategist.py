@@ -139,11 +139,17 @@ class Strategist:
             StrategyContext with all relevant information.
         """
         # Get nearby markets, spawns, etc.
-        if state.player.coordinates:
+        # Use coordinates if available, otherwise use position (dict format)
+        player_coords = (
+            state.player.coordinates or
+            state.player.position or
+            {"x": 0, "y": 0, "z": 0}
+        )
+        if player_coords:
             nearby_entities = []
             for entity_type in ["market", "spawn_point", "vendor", "healer"]:
                 results = await self.database.find_nearest(
-                    state.player.coordinates,
+                    player_coords,
                     entity_type,
                     limit=10
                 )
@@ -502,10 +508,12 @@ Respond in this JSON format:
         Args:
             state: State to log.
         """
-        if state.player.coordinates:
+        # Use coordinates if available, otherwise use position
+        player_coords = state.player.coordinates or state.player.position
+        if player_coords:
             await self.database.log_player_position(
                 session_id=self.session_id,
-                position=state.player.coordinates,
+                position=player_coords,
                 health_percent=state.player.health_percent,
                 is_in_combat=state.player.is_in_combat,
                 detected_objects=[d.to_dict() for d in state.detections]
