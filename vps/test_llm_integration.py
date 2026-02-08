@@ -4,6 +4,7 @@ Test script for Synthetic LLM API integration.
 Tests the LLM client with various game state scenarios.
 """
 import sys
+import os
 import asyncio
 import json
 from pathlib import Path
@@ -222,7 +223,12 @@ async def test_scenario(
 
 async def main():
     """Main test function."""
-    API_KEY = "syn_4b011e593839090a79affd5348e4de31"
+    API_KEY = os.getenv("SYNTHETIC_API_KEY", os.getenv("LLM_API_KEY"))
+    if not API_KEY:
+        print("ERROR: SYNTHETIC_API_KEY or LLM_API_KEY environment variable required")
+        print("Set it with: export SYNTHETIC_API_KEY=your_key_here")
+        return
+
     API_URL = "https://api.synthetic.new/openai/v1"
     MODEL = "hf:deepseek-ai/DeepSeek-V3"
 
