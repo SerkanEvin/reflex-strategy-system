@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 import asyncio
 from dataclasses import dataclass
+import logging
 
 import sys
 from pathlib import Path
@@ -16,6 +17,9 @@ from shared.models import (
     LocalState, StrategyPolicy, PlayerState, Detection, DetectionType, SecurityTier
 )
 from vps.database import SpatialDatabase
+from vps.llm_client import LLMClient, LLMResponse
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -39,19 +43,28 @@ class Strategist:
         self,
         database: SpatialDatabase,
         llm_api_key: Optional[str] = None,
-        llm_model: str = "gpt-4o-mini"
+        llm_model: str = "gpt-4o-mini",
+        llm_api_url: Optional[str] = None,
+        enable_llm: bool = True
     ):
         """
         Initialize strategist.
 
         Args:
             database: SpatialDatabase connection.
-            llm_api_key: API key for LLM service (OpenAI, Anthropic, etc.).
+            llm_api_key: API key for LLM service (Synthetic API, OpenAI, etc.).
             llm_model: Model to use for reasoning.
+            llm_api_url: Custom API URL (default uses Synthetic API).
+            enable_llm: Enable LLM-based reasoning (fallback to rule-based if False).
         """
         self.database = database
         self.llm_api_key = llm_api_key
         self.llm_model = llm_model
+        self.llm_api_url = llm_api_url or LLMClient.DEFAULT_API_URL
+        self.enable_llm = enable_llm and llm_api_key is not None
+
+        # LLM Client (lazy initialization)
+        self._llm_client: Optional[LLMClient] = None
 
         # Policy tracking
         self.current_policy: Optional[StrategyPolicy] = None
@@ -60,6 +73,30 @@ class Strategist:
 
         # Rule-based fallbacks for critical scenarios
         self.critical_rules = self._initialize_critical_rules()
+
+        # LLM statistics
+        self.llm_stats = {
+            "total_calls": 0,
+            "successful_calls": 0,
+            "failed_calls": 0,
+            "fallback_used": 0
+        }
+
+    @property
+    def llm_client(self) -> Optional[LLMClient]:
+        """Get or create LLM client."""
+        if not self.enable_llm:
+            return None
+
+        if self._llm_client is None:
+            self._llm_client = LLMClient(
+                api_key=self.llm_api_key,
+                api_url=self.llm_api_url,
+                model=self.llm_model
+            )
+            logger.info(f"[STRATEGIST] LLM client initialized with model: {self.llm_model}")
+
+        return self._llm_client
 
     def _generate_session_id(self) -> str:
         """Generate unique session identifier."""
@@ -223,16 +260,40 @@ class Strategist:
         Returns:
             Policy decision from LLM.
         """
-        # TODO: Replace with actual LLM API call
-        # This is a placeholder that uses rule-based logic
+        self.llm_stats["total_calls"] += 1
+
+        # Check if LLM is enabled
+        if not self.enable_llm or self.llm_client is None:
+            logger.debug("[STRATEGIST] LLM disabled, using rule-based fallback")
+            self.llm_stats["fallback_used"] += 1
+            return self._rule_based_strategy(state, context)
 
         # Build reasoning prompt
         prompt = self._build_llm_prompt(state, context)
 
-        # Placeholder: Use rule-based reasoning instead
-        policy = self._rule_based_strategy(state, context)
+        try:
+            # Call LLM API
+            response: LLMResponse = await self._call_llm(prompt, state, context)
 
-        return policy
+            # Convert to policy format
+            policy = {
+                "action": response.action,
+                "reasoning": response.reasoning,
+                "priority": response.priority,
+                "source": "llm",
+                "target": response.target
+            }
+
+            self.llm_stats["successful_calls"] += 1
+            logger.info(f"[STRATEGIST] LLM decision: {policy['action']} - {policy['reasoning']}")
+
+            return policy
+
+        except Exception as e:
+            logger.warning(f"[STRATEGIST] LLM call failed: {e}, using rule-based fallback")
+            self.llm_stats["failed_calls"] += 1
+            self.llm_stats["fallback_used"] += 1
+            return self._rule_based_strategy(state, context)
 
     def _build_llm_prompt(
         self,
@@ -289,29 +350,47 @@ Respond in this JSON format:
 """
         return prompt
 
-    async def _call_llm(self, prompt: str) -> Dict[str, Any]:
+    async def _call_llm(
+        self,
+        prompt: str,
+        state: LocalState,
+        context: StrategyContext
+    ) -> LLMResponse:
         """
         Call LLM API for reasoning.
 
         Args:
             prompt: Prompt to send to LLM.
+            state: Current state (for context building).
+            context: Strategy context.
 
         Returns:
-            Parsed LLM response.
-        """
-        # TODO: Implement actual LLM call
-        # Options:
-        # - OpenAI API
-        # - Anthropic Claude API
-        # - Local LLM (Ollama, etc.)
+            Parsed LLMResponse.
 
-        # Placeholder response
-        return {
-            "action": "PATROL",
-            "reasoning": "No immediate threats, patrolling area",
-            "priority": 5,
-            "source": "llm_placeholder"
+        Raises:
+            Exception: If LLM call fails.
+        """
+        client = self.llm_client
+        if client is None:
+            raise Exception("LLM client not available")
+
+        # Alternatively, use the client's built-in prompt builder
+        state_dict = state.to_dict()
+        context_dict = {
+            "spatial_memory": context.spatial_memory,
+            "inventory_state": context.inventory_state,
+            "current_strategy": context.current_strategy.to_dict() if context.current_strategy else None
         }
+
+        enhanced_prompt = client.get_strategy_prompt(state_dict, context_dict) + prompt
+
+        response = await client.chat_completion(
+            prompt=enhanced_prompt,
+            max_tokens=300,
+            temperature=0.7
+        )
+
+        return response
 
     def _rule_based_strategy(
         self,
@@ -528,3 +607,13 @@ Respond in this JSON format:
         self.current_policy = None
         self.policy_history = []
         self.session_id = self._generate_session_id()
+
+    async def close(self):
+        """Clean up resources."""
+        if self._llm_client:
+            await self._llm_client.close()
+            self._llm_client = None
+
+    def get_llm_stats(self) -> Dict[str, int]:
+        """Get LLM usage statistics."""
+        return self.llm_stats.copy()

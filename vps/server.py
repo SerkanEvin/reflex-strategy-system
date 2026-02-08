@@ -22,6 +22,7 @@ from shared.models import (
 )
 from vps.database import SpatialDatabase
 from vps.strategist import Strategist
+from vps.llm_client import LLMClient
 
 
 def _parse_local_state(state_dict: Dict) -> LocalState:
@@ -88,6 +89,8 @@ class HealthResponse(BaseModel):
     timestamp: float
     connections: int
     database_connected: bool
+    llm_enabled: bool = False
+    llm_model: Optional[str] = None
 
 
 class VPSBrainServer:
@@ -106,7 +109,9 @@ class VPSBrainServer:
         db_user: str = "postgres",
         db_password: Optional[str] = None,
         llm_api_key: Optional[str] = None,
-        llm_model: str = "gpt-4o-mini"
+        llm_model: str = "gpt-4o-mini",
+        llm_api_url: Optional[str] = None,
+        enable_llm: bool = True
     ):
         """
         Initialize VPS Brain server.
@@ -121,6 +126,8 @@ class VPSBrainServer:
             db_password: Database password.
             llm_api_key: API key for LLM service.
             llm_model: LLM model to use.
+            llm_api_url: Custom API URL for LLM (default uses Synthetic API).
+            enable_llm: Enable LLM-based strategy.
         """
         self.host = host
         self.port = port
@@ -153,7 +160,9 @@ class VPSBrainServer:
         self.strategist = Strategist(
             database=self.database,
             llm_api_key=llm_api_key,
-            llm_model=llm_model
+            llm_model=llm_model,
+            llm_api_url=llm_api_url,
+            enable_llm=enable_llm
         )
 
         # WebSocket management
@@ -417,7 +426,9 @@ class VPSBrainServer:
             status="healthy" if self.database.pool else "degraded",
             timestamp=datetime.now().timestamp(),
             connections=len(self.active_connections),
-            database_connected=self.database.pool is not None
+            database_connected=self.database.pool is not None,
+            llm_enabled=self.strategist.enable_llm,
+            llm_model=self.strategist.llm_model if self.strategist.enable_llm else None
         )
 
     async def get_statistics(self):
@@ -539,8 +550,10 @@ def main():
         "db_name": os.getenv("DB_NAME", "reflex_strategy"),
         "db_user": os.getenv("DB_USER", "postgres"),
         "db_password": os.getenv("DB_PASSWORD"),
-        "llm_api_key": os.getenv("LLM_API_KEY"),
-        "llm_model": os.getenv("LLM_MODEL", "gpt-4o-mini")
+        "llm_api_key": os.getenv("SYNTHETIC_API_KEY") or os.getenv("LLM_API_KEY"),
+        "llm_model": os.getenv("SYNTHETIC_MODEL", LLMClient.DEFAULT_MODEL),
+        "llm_api_url": os.getenv("SYNTHETIC_API_URL", LLMClient.DEFAULT_API_URL),
+        "enable_llm": os.getenv("ENABLE_LLM", "true").lower() in ("true", "1", "yes")
     }
 
     # Create and run server
