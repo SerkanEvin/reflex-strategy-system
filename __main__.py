@@ -37,7 +37,8 @@ Architecture:
 
     parser.add_argument(
         "command",
-        choices=["local", "vps", "setup-db", "setup-local-db"],
+        choices=["local", "vps", "debug", "setup-db", "setup-local-db"],
+        nargs="?",
         help="Command to run"
     )
 
@@ -115,6 +116,12 @@ Architecture:
                 await coordinator.stop()
 
         asyncio.run(run_local())
+
+    elif args.command == "debug":
+        # Debug viewer - pass through any remaining args
+        sys.argv = ["debug_view.py"] + sys.argv[2:]
+        from local import debug_view
+        debug_view.main()
 
     elif args.command == "vps":
         print("[SYSTEM] Starting VPS (Brain)...")

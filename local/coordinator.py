@@ -26,6 +26,7 @@ from instinct import InstinctLayer
 from actuator import Actuator
 from client import VPSClient
 from config import LocalConfig
+from debug import init_debug_mode, get_debug_logger, DebugUI, log_debug, log_debug_action
 
 
 @dataclass
@@ -80,6 +81,21 @@ class LocalCoordinator:
         # Synchronization
         self.state_update_interval = 0.5  # Seconds between state updates to VPS
         self.last_state_update = 0.0
+
+        # Debug mode
+        self.debug_logger = None
+        self.debug_ui = None
+        self.last_action_record: Optional[Dict[str, Any]] = None
+
+        # Initialize debug mode if enabled
+        if self.config.debug_mode:
+            self.debug_logger = init_debug_mode(
+                enabled=True,
+                max_events=10000,
+                log_file=None  # Will use default
+            )
+            self.debug_ui = DebugUI(self.debug_logger, enabled=True)
+            log_debug("system_start", "coordinator", {"config": str(config)}, ["init"])
 
     async def initialize(self):
         """Initialize all subsystems."""
@@ -200,6 +216,15 @@ class LocalCoordinator:
             frame_id=self.frame_id
         )
 
+        # Debug: Log detections
+        if self.debug_logger and detections:
+            self.debug_logger.log_detections(
+                frame_id=self.frame_id,
+                detections=[d.to_dict() for d in detections],
+                player_state=player_state.to_dict(),
+                security_tier=security_tier.value
+            )
+
         # 6. Decision - Reflex vs Strategy
         await self._make_decision(reflex_command, security_tier)
 
@@ -218,6 +243,15 @@ class LocalCoordinator:
         if self.stats.frames_processed % 30 == 0:
             elapsed = time.time() - self.stats.start_time
             self.stats.fps = self.stats.frames_processed / elapsed
+
+        # Debug: Update UI display
+        if self.debug_ui:
+            self.debug_ui.display_status(
+                coordinator_state=self.get_stats(),
+                player_state=player_state.to_dict() if player_state else None,
+                detections=[d.to_dict() for d in detections[:5]],
+                last_action=self.last_action_record
+            )
 
     async def _estimate_player_state(
         self,
@@ -300,11 +334,39 @@ class LocalCoordinator:
                 self.actuator.execute_reflex(reflex_command)
                 self.stats.reflex_commands_executed += 1
 
+                # Debug: Log reflex action
+                if self.debug_logger:
+                    action_record = {
+                        "action_type": "reflex",
+                        "action": reflex_command.action_type.value,
+                        "reasoning": reflex_command.reasoning,
+                        "priority": 1,  # Reflex is always priority 1
+                        "source": "instinct",
+                        "execution_mode": action.execution_mode
+                    }
+                    self.debug_logger.log_action(**action_record)
+                    self.last_action_record = action_record
+                    log_debug("action_execute", "coordinator", action_record, ["reflex"])
+
             elif self.current_strategy and action.execution_mode == "MERGED":
                 # Check if strategy is compatible with current security
                 if security_tier == SecurityTier.SECURE:
                     self.actuator.execute_strategy(self.current_strategy)
                     self.stats.strategy_commands_executed += 1
+
+                    # Debug: Log strategy action
+                    if self.debug_logger:
+                        action_record = {
+                            "action_type": "strategy",
+                            "action": self.current_strategy.action,
+                            "reasoning": self.current_strategy.reasoning,
+                            "priority": self.current_strategy.priority,
+                            "source": "vps",
+                            "execution_mode": action.execution_mode
+                        }
+                        self.debug_logger.log_action(**action_record)
+                        self.last_action_record = action_record
+                        log_debug("action_execute", "coordinator", action_record, ["strategy"])
 
     async def _on_strategy_update(self, strategy: StrategyPolicy):
         """
@@ -328,6 +390,12 @@ class LocalCoordinator:
         """Stop the coordinator and cleanup."""
         print("[COORDINATOR] Stopping...")
         self.running = False
+
+        # Export debug session
+        if self.debug_logger:
+            print("[COORDINATOR] Exporting debug session...")
+            export_path = self.debug_logger.export_session()
+            print(f"[COORDINATOR] Debug session exported to {export_path}")
 
         # Stop capture
         if self.capture:

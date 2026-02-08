@@ -17,10 +17,51 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 from shared.models import (
-    LocalState, WebSocketMessage, MessageType, StrategyPolicy, SpatialMemoryEntry
+    LocalState, WebSocketMessage, MessageType, StrategyPolicy, SpatialMemoryEntry,
+    PlayerState, Detection, BoundingBox, DetectionType, SecurityTier
 )
 from vps.database import SpatialDatabase
 from vps.strategist import Strategist
+from vps.llm_client import LLMClient
+
+
+def _parse_local_state(state_dict: Dict) -> LocalState:
+    """Parse state dictionary to LocalState with proper nested dataclasses."""
+    # Parse nested PlayerState
+    player_dict = state_dict.get("player", {})
+    player = PlayerState(**player_dict)
+
+    # Parse detections
+    detections = []
+    for det_dict in state_dict.get("detections", []):
+        # Parse nested BoundingBox
+        bbox_dict = det_dict.get("bbox", {})
+        bbox = BoundingBox(**bbox_dict)
+
+        # Parse detection type if string
+        det_type = DetectionType(det_dict.get("detection_type", "other"))
+
+        detection = Detection(
+            bbox=bbox,
+            detection_type=det_type,
+            label=det_dict.get("label", ""),
+            confidence=det_dict.get("confidence", 0.0),
+            distance=det_dict.get("distance"),
+            health_percent=det_dict.get("health_percent")
+        )
+        detections.append(detection)
+
+    # Parse security tier if string
+    security_tier = SecurityTier(state_dict.get("security_tier", 2))
+
+    return LocalState(
+        timestamp=state_dict.get("timestamp", 0.0),
+        player=player,
+        detections=detections,
+        security_tier=security_tier,
+        active_targets=state_dict.get("active_targets", []),
+        frame_id=state_dict.get("frame_id", 0)
+    )
 
 
 # Pydantic models for REST API endpoints
@@ -48,6 +89,8 @@ class HealthResponse(BaseModel):
     timestamp: float
     connections: int
     database_connected: bool
+    llm_enabled: bool = False
+    llm_model: Optional[str] = None
 
 
 class VPSBrainServer:
@@ -66,7 +109,9 @@ class VPSBrainServer:
         db_user: str = "postgres",
         db_password: Optional[str] = None,
         llm_api_key: Optional[str] = None,
-        llm_model: str = "gpt-4o-mini"
+        llm_model: str = "gpt-4o-mini",
+        llm_api_url: Optional[str] = None,
+        enable_llm: bool = True
     ):
         """
         Initialize VPS Brain server.
@@ -81,6 +126,8 @@ class VPSBrainServer:
             db_password: Database password.
             llm_api_key: API key for LLM service.
             llm_model: LLM model to use.
+            llm_api_url: Custom API URL for LLM (default uses Synthetic API).
+            enable_llm: Enable LLM-based strategy.
         """
         self.host = host
         self.port = port
@@ -113,7 +160,9 @@ class VPSBrainServer:
         self.strategist = Strategist(
             database=self.database,
             llm_api_key=llm_api_key,
-            llm_model=llm_model
+            llm_model=llm_model,
+            llm_api_url=llm_api_url,
+            enable_llm=enable_llm
         )
 
         # WebSocket management
@@ -307,9 +356,9 @@ class VPSBrainServer:
             message: State update message.
         """
         try:
-            # Parse local state
+            # Parse local state with proper nested dataclass conversion
             state_dict = message.payload
-            state = LocalState(**state_dict)
+            state = _parse_local_state(state_dict)
 
             # Feed to strategist for analysis
             policy = await self.strategist.analyze_and_decide(state)
@@ -377,7 +426,9 @@ class VPSBrainServer:
             status="healthy" if self.database.pool else "degraded",
             timestamp=datetime.now().timestamp(),
             connections=len(self.active_connections),
-            database_connected=self.database.pool is not None
+            database_connected=self.database.pool is not None,
+            llm_enabled=self.strategist.enable_llm,
+            llm_model=self.strategist.llm_model if self.strategist.enable_llm else None
         )
 
     async def get_statistics(self):
@@ -460,7 +511,7 @@ class VPSBrainServer:
     async def request_strategy(self, request: StrategyRequest):
         """Request strategy for current state."""
         try:
-            state = LocalState(**request.state)
+            state = _parse_local_state(request.state)
             policy = await self.strategist.analyze_and_decide(state)
 
             if request.force_update and policy is None:
@@ -499,8 +550,10 @@ def main():
         "db_name": os.getenv("DB_NAME", "reflex_strategy"),
         "db_user": os.getenv("DB_USER", "postgres"),
         "db_password": os.getenv("DB_PASSWORD"),
-        "llm_api_key": os.getenv("LLM_API_KEY"),
-        "llm_model": os.getenv("LLM_MODEL", "gpt-4o-mini")
+        "llm_api_key": os.getenv("SYNTHETIC_API_KEY") or os.getenv("LLM_API_KEY"),
+        "llm_model": os.getenv("SYNTHETIC_MODEL", LLMClient.DEFAULT_MODEL),
+        "llm_api_url": os.getenv("SYNTHETIC_API_URL", LLMClient.DEFAULT_API_URL),
+        "enable_llm": os.getenv("ENABLE_LLM", "true").lower() in ("true", "1", "yes")
     }
 
     # Create and run server
