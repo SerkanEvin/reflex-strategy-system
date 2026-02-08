@@ -433,8 +433,25 @@ class SpatialDatabase:
             health_percent: Player health percentage.
             is_in_combat: Whether player is in combat.
             detected_objects: List of detected objects.
+
+        Note:
+            If database pool is not available, falls back to docker exec.
         """
         pos_ewkt = f"POINTZ({position['x']} {position['y']} {position['z']})"
+        detected_objects_json = json.dumps(detected_objects).replace("'", "''")
+
+        # Check if pool is available
+        if not self.pool:
+            # Fallback using docker exec
+            print("[DATABASE] Using fallback for player position logging")
+
+            query = f"""
+                INSERT INTO player_positions (
+                    session_id, position, health_percent, is_in_combat, detected_objects
+                ) VALUES ('{session_id}', ST_GeomFromEWKT('{pos_ewkt}'), {health_percent}, {str(is_in_combat).lower()}, '{detected_objects_json}'::jsonb);
+            """
+            self._docker_query(query)
+            return
 
         async with self.pool.acquire() as conn:
             await conn.execute("""
@@ -457,7 +474,15 @@ class SpatialDatabase:
 
         Returns:
             List of position records.
+
+        Note:
+            If database pool is not available, returns empty list.
         """
+        # Check if pool is available
+        if not self.pool:
+            print("[DATABASE] Using fallback for recent positions (returning empty)")
+            return []
+
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT
@@ -500,7 +525,29 @@ class SpatialDatabase:
 
         Returns:
             ID of logged strategy.
+
+        Note:
+            If database pool is not available, falls back to docker exec
+            and returns a timestamp-based ID for tracking.
         """
+        # Check if pool is available
+        if not self.pool:
+            # Fallback using docker exec
+            import time
+            print("[DATABASE] Using fallback for strategy logging")
+            timestamp = int(time.time())
+            context_json = json.dumps(context).replace("'", "''")
+
+            query = f"""
+                INSERT INTO strategy_logs (policy_id, action, reasoning, priority, context)
+                VALUES ({policy_id if policy_id else 'NULL'}, '{action}', '{reasoning}', {priority}, '{context_json}'::jsonb)
+                RETURNING id;
+            """
+            result = self._docker_query(query)
+            if result.strip():
+                return int(result.strip().split()[0])
+            return timestamp
+
         async with self.pool.acquire() as conn:
             result = await conn.execute("""
                 INSERT INTO strategy_logs (policy_id, action, reasoning, priority, context)
