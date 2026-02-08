@@ -31,8 +31,8 @@ pyyaml==6.0.1
 # anthropic==0.18.0
 # ollama==0.1.6
 
-# Optional: YOLO (uncomment when using actual YOLO model)
-# ultralytics==8.1.0
-# torch==2.1.2
-# torchvision==0.16.2
-# torchaudio==2.1.2
+# YOLO (required for training)
+ultralytics==8.1.0
+torch==2.1.2
+torchvision==0.16.2
+torchaudio==2.1.2

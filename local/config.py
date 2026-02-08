@@ -37,6 +37,15 @@ class VisionConfig:
 
 
 @dataclass
+class GameConfig:
+    """Game profile configuration."""
+    profile_name: str = "default"  # "minecraft", "default_mmorpg", etc.
+    profile_path: Optional[str] = None  # Path to custom game profile YAML
+    model_path: Optional[str] = None  # Specific model override for this profile
+    download_dir: str = "models/"  # Directory for downloaded/trained models
+
+
+@dataclass
 class InstinctConfig:
     """Instinct layer configuration."""
     critical_health_threshold: float = 30.0
@@ -79,6 +88,7 @@ class LocalConfig:
     """Main configuration for Local PC."""
     capture: CaptureConfig
     vision: VisionConfig
+    game: GameConfig
     instinct: InstinctConfig
     actuator: ActuatorConfig
     vps: VPSConfig
@@ -114,6 +124,12 @@ class LocalConfig:
                 device=os.getenv("VISION_DEVICE", "cpu"),
                 estimate_depth=os.getenv("VISION_ESTIMATE_DEPTH", "true").lower() == "true",
                 min_detection_size=int(os.getenv("VISION_MIN_SIZE", "20"))
+            ),
+            game=GameConfig(
+                profile_name=os.getenv("GAME_PROFILE", "default"),
+                profile_path=os.getenv("GAME_PROFILE_PATH"),
+                model_path=os.getenv("GAME_MODEL_PATH"),
+                download_dir=os.getenv("MODEL_DOWNLOAD_DIR", "models/")
             ),
             instinct=InstinctConfig(
                 critical_health_threshold=float(os.getenv("INSTINCT_CRITICAL_HP", "30.0")),
@@ -158,6 +174,7 @@ class LocalConfig:
 default_config = LocalConfig(
     capture=CaptureConfig(),
     vision=VisionConfig(),
+    game=GameConfig(),
     instinct=InstinctConfig(),
     actuator=ActuatorConfig(),
     vps=VPSConfig()

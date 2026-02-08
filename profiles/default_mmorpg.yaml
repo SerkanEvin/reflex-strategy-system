@@ -1,0 +1,59 @@
+profile:
+  name: "default_mmorpg"
+  display_name: "Default MMORPG"
+  description: "Default MMORPG profile with standard detection types"
+
+model:
+  dataset_path: null
+  download_url: null
+
+class_mapping:
+  # YOLO class ID -> DetectionType mappings
+  0:  # enemy
+    detection_type: "ENEMY"
+    label: "enemy"
+    behavior: "combat"
+  1:  # friendly NPC
+    detection_type: "FRIENDLY"
+    label: "friendly"
+    behavior: "interact"
+  2:  # player
+    detection_type: "PLAYER"
+    label: "player"
+    behavior: "observe"
+  3:  # resource (ore node, tree, etc.)
+    detection_type: "RESOURCE"
+    label: "resource"
+    behavior: "gather"
+  4:  # item on ground
+    detection_type: "ITEM"
+    label: "item"
+    behavior: "pickup"
+  5:  # UI element
+    detection_type: "UI_ELEMENT"
+    label: "ui_element"
+    behavior: null
+  6:  # market/NPC
+    detection_type: "MARKET"
+    label: "market"
+    behavior: "trade"
+
+behaviors:
+  combat:
+    action: "ATTACK"
+    interact_key: "1"
+  interact:
+    action: "APPROACH"
+    interact_key: "f"
+  observe:
+    action: "NONE"
+    interact_key: null
+  gather:
+    action: "APPROACH"
+    interact_key: "mouse_left"
+  pickup:
+    action: "APPROACH"
+    interact_key: "f"
+  trade:
+    action: "APPROACH"
+    interact_key: "f"

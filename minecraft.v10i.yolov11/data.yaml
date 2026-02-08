@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 7
+names: ['cow', 'duck', 'flower', 'people', 'pig', 'rabbit', 'sheep']
+
+roboflow:
+  workspace: yolo-minecraft
+  project: minecraft-ogpjp
+  version: 10
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/yolo-minecraft/minecraft-ogpjp/dataset/10
