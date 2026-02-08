@@ -5,26 +5,42 @@ Detects enemies, stones, and UI elements from game frames.
 import cv2
 import numpy as np
 import time
-from typing import List, Dict, Optional, Tuple
+import yaml
+import requests
 from pathlib import Path
+from typing import List, Dict, Optional, Tuple, Union
+from urllib.parse import urlparse
 
 # Import shared models
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 from shared.models import (
-    Detection, DetectionType, BoundingBox, PlayerState
+    Detection, DetectionType, BoundingBox, PlayerState, GameProfile
 )
 
 
 class VisionSystem:
     """YOLOv11 inference engine for object detection."""
 
+    # Default categories (fallback when no profile loaded)
+    DEFAULT_CATEGORIES = {
+        0: DetectionType.ENEMY,
+        1: DetectionType.FRIENDLY,
+        2: DetectionType.PLAYER,
+        3: DetectionType.RESOURCE,
+        4: DetectionType.ITEM,
+        5: DetectionType.UI_ELEMENT,
+        6: DetectionType.MARKET,
+    }
+
     def __init__(
         self,
         model_path: Optional[str] = None,
         confidence_threshold: float = 0.5,
         iou_threshold: float = 0.45,
-        device: str = "cpu"
+        device: str = "cpu",
+        game_profile: Optional[GameProfile] = None,
+        download_dir: str = "models/"
     ):
         """
         Initialize vision system.
@@ -34,22 +50,25 @@ class VisionSystem:
             confidence_threshold: Minimum confidence for detection.
             iou_threshold: IoU threshold for NMS.
             device: Device to run inference on ("cpu" or "cuda").
+            game_profile: Game profile with class mappings.
+            download_dir: Directory for downloaded models.
         """
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
         self.device = device
         self.model_path = model_path
+        self.download_dir = Path(download_dir)
+        self.download_dir.mkdir(parents=True, exist_ok=True)
 
-        # Detection categories for 3D MMORPG
-        self.categories = {
-            0: DetectionType.ENEMY,
-            1: DetectionType.FRIENDLY,
-            2: DetectionType.PLAYER,
-            3: DetectionType.RESOURCE,
-            4: DetectionType.ITEM,
-            5: DetectionType.UI_ELEMENT,
-            6: DetectionType.MARKET,
-        }
+        # Game profile support
+        self.game_profile = game_profile
+        self.categories = {}
+
+        # Initialize categories from profile or use default
+        if game_profile:
+            self._load_categories_from_profile(game_profile)
+        else:
+            self.categories = self.DEFAULT_CATEGORIES.copy()
 
         # TODO: Load YOLOv11 model here
         # self.model = self._load_model(model_path)
@@ -58,6 +77,49 @@ class VisionSystem:
 
         # UI element detection templates (fallback for HP bars, minimap, etc.)
         self.ui_templates = {}
+
+    def _load_categories_from_profile(self, game_profile: GameProfile):
+        """
+        Load category mapping from game profile.
+
+        Args:
+            game_profile: Game profile containing class mappings.
+        """
+        self.categories = {}
+        for class_id, mapping in game_profile.class_mappings.items():
+            self.categories[class_id] = mapping.detection_type
+
+    def load_game_profile(self, profile_path: str):
+        """
+        Load game profile from YAML file.
+
+        Args:
+            profile_path: Path to game profile YAML file.
+        """
+        try:
+            with open(profile_path, 'r') as f:
+                profile_data = yaml.safe_load(f)
+
+            self.game_profile = GameProfile.from_dict(profile_data)
+            self._load_categories_from_profile(self.game_profile)
+
+            print(f"[VISION] Loaded game profile: {self.game_profile.display_name}")
+            print(f"[VISION] Classes: {self.game_profile.class_mappings}")
+
+            # Attempt to download model if available and not found locally
+            if self.game_profile.download_url and not self.model_path:
+                model_name = f"{self.game_profile.name}_model.pt"
+                local_model_path = self.download_dir / model_name
+                if not local_model_path.exists():
+                    print(f"[VISION] Model not found, attempting download from profile...")
+                    if download_model(self.game_profile.download_url, str(local_model_path)):
+                        self.model_path = str(local_model_path)
+                        self._load_model(self.model_path)
+
+        except Exception as e:
+            print(f"[VISION] Failed to load game profile: {e}")
+            # Fallback to default categories
+            self.categories = self.DEFAULT_CATEGORIES.copy()
 
     def _load_model(self, model_path: Optional[str]) -> Optional[object]:
         """
@@ -70,7 +132,40 @@ class VisionSystem:
             Loaded model or None.
         """
         if model_path is None:
-            print("WARNING: No model path provided. Using placeholder mode.")
+            # Check if profile has download URL
+            if self.game_profile and self.game_profile.download_url:
+                model_name = f"{self.game_profile.name}_model.pt"
+                local_model_path = self.download_dir / model_name
+                if local_model_path.exists():
+                    model_path = str(local_model_path)
+                else:
+                    print(f"[VISION] Model not found locally, downloading from {self.game_profile.download_url}...")
+                    if download_model(self.game_profile.download_url, str(local_model_path)):
+                        model_path = str(local_model_path)
+                    else:
+                        print("WARNING: Failed to download model. Using placeholder mode.")
+                        return None
+            else:
+                print("WARNING: No model path provided. Using placeholder mode.")
+                return None
+
+        # Check if model exists and is valid
+        if not Path(model_path).exists():
+            # Try to download if path looks like a URL
+            if urlparse(model_path).scheme in ('http', 'https'):
+                output_path = self.download_dir / Path(urlparse(model_path).path).name
+                if download_model(model_path, str(output_path)):
+                    model_path = str(output_path)
+                else:
+                    print(f"WARNING: Failed to download model from {model_path}")
+                    return None
+            else:
+                print(f"WARNING: Model file not found: {model_path}")
+                return None
+
+        # Verify model file integrity
+        if not verify_model(model_path):
+            print(f"WARNING: Model file verification failed: {model_path}")
             return None
 
         try:
@@ -128,6 +223,13 @@ class VisionSystem:
 
         detections = []
         # Process results...
+        # For YOLO results, map class IDs using:
+        # if self.game_profile:
+        #     detection_type = self.game_profile.get_detection_type(class_id)
+        #     label = self.game_profile.get_label(class_id)
+        # else:
+        #     detection_type = self.categories.get(class_id, DetectionType.OTHER)
+        #     label = f"class_{class_id}"
 
         return self._filter_detections(detections, filter_types)
 
@@ -370,3 +472,103 @@ class VisionSystem:
             )
 
         return vis_frame
+
+
+def download_model(url: str, output_path: str, timeout: int = 300) -> bool:
+    """
+    Download pretrained model from URL.
+
+    Args:
+        url: URL to download model from.
+        output_path: Path where the model should be saved.
+        timeout: Maximum time to wait for download in seconds.
+
+    Returns:
+        True if download succeeded, False otherwise.
+    """
+    try:
+        print(f"Downloading model from {url}...")
+        response = requests.get(url, stream=True, timeout=timeout)
+
+        # Check if request was successful
+        response.raise_for_status()
+
+        # Create output directory if needed
+        output_dir = Path(output_path).parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Download file in chunks
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+
+        with open(output_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    # Optional: print progress
+                    if total_size > 0:
+                        progress = (downloaded / total_size) * 100
+                        if downloaded % (1024 * 1024) == 0:  # Print every MB
+                            print(f"\rDownloading: {progress:.1f}%", end='', flush=True)
+
+        print(f"\nModel downloaded successfully to {output_path}")
+        return True
+
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to download model: {e}")
+        return False
+    except Exception as e:
+        print(f"Error during download: {e}")
+        return False
+
+
+def verify_model(model_path: str) -> bool:
+    """
+    Verify downloaded model file integrity.
+
+    Args:
+        model_path: Path to model file to verify.
+
+    Returns:
+        True if model appears valid, False otherwise.
+    """
+    try:
+        path = Path(model_path)
+
+        # Check if file exists
+        if not path.exists():
+            return False
+
+        # Check file size (models should be at least 1MB)
+        file_size = path.stat().st_size
+        if file_size < 1024 * 1024:  # Less than 1MB
+            print(f"Model file too small: {file_size} bytes")
+            return False
+
+        # Check file extension
+        valid_extensions = ('.pt', '.onnx', '.engine', '.torchscript')
+        if not path.suffix.lower() in valid_extensions:
+            print(f"Invalid model file extension: {path.suffix}")
+            return False
+
+        # Attempt to read file header to verify it's not corrupted
+        # For PyTorch models, check if it's a zip file (PyTorch uses zip format)
+        if path.suffix.lower() == '.pt':
+            try:
+                import zipfile
+                with zipfile.ZipFile(model_path, 'r') as _:
+                    pass  # Just try to open it
+            except zipfile.BadZipFile:
+                # Old torch format, try loading it
+                try:
+                    import torch
+                    torch.load(model_path, map_location='cpu')
+                except Exception:
+                    return False
+
+        return True
+
+    except Exception as e:
+        print(f"Model verification failed: {e}")
+        return False

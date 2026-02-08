@@ -1,0 +1,52 @@
+profile:
+  name: "minecraft"
+  display_name: "Minecraft"
+  description: "Minecraft automation - animals, resources, entities"
+
+model:
+  # Dataset location for training
+  dataset_path: "/Users/seko/reflex-strategy-system/minecraft.v10i.yolov11"
+  # Pretrained model download URL (Roboflow - requires authentication)
+  download_url: "https://universe.roboflow.com/yolo-minecraft/minecraft-ogpjp/10/dataset"
+
+class_mapping:
+  # YOLO class ID -> DetectionType mappings
+  # Dataset has 7 classes: cow, duck, flower, people, pig, rabbit, sheep
+  0:  # cow
+    detection_type: "RESOURCE"
+    label: "cow"
+    behavior: "farm"
+  1:  # duck
+    detection_type: "RESOURCE"
+    label: "duck"
+    behavior: "farm"
+  2:  # flower
+    detection_type: "RESOURCE"
+    label: "flower"
+    behavior: "gather"
+  3:  # people (other players)
+    detection_type: "PLAYER"
+    label: "player"
+    behavior: "avoid"
+  4:  # pig
+    detection_type: "RESOURCE"
+    label: "pig"
+    behavior: "farm"
+  5:  # rabbit
+    detection_type: "RESOURCE"
+    label: "rabbit"
+    behavior: "farm"
+  6:  # sheep
+    detection_type: "RESOURCE"
+    label: "sheep"
+    behavior: "farm"
+
+behaviors:
+  farm:
+    action: "APPROACH"
+    interact_key: "left_click"
+  gather:
+    action: "APPROACH"
+    interact_key: "right_click"
+  avoid:
+    action: "RETREAT"

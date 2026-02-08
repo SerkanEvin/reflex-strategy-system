@@ -27,6 +27,8 @@ from actuator import Actuator
 from client import VPSClient
 from config import LocalConfig
 from debug import init_debug_mode, get_debug_logger, DebugUI, log_debug, log_debug_action
+from shared.models import GameProfile
+import yaml
 
 
 @dataclass
@@ -74,6 +76,7 @@ class LocalCoordinator:
         self.frame_id = 0
         self.latest_state: Optional[LocalState] = None
         self.current_strategy: Optional[StrategyPolicy] = None
+        self.game_profile: Optional[GameProfile] = None
 
         # Statistics
         self.stats = CoordinatorStats(start_time=time.time())
@@ -97,9 +100,40 @@ class LocalCoordinator:
             self.debug_ui = DebugUI(self.debug_logger, enabled=True)
             log_debug("system_start", "coordinator", {"config": str(config)}, ["init"])
 
+    def _load_game_profile(self) -> Optional[GameProfile]:
+        """
+        Load game profile from configuration.
+
+        Returns:
+            GameProfile instance or None.
+        """
+        profile_path = self.config.game.profile_path
+
+        # If no path specified, use default based on profile_name
+        if profile_path is None:
+            profile_name = self.config.game.profile_name
+            profile_path = str(Path(__file__).parent.parent / "profiles" / f"{profile_name}.yaml")
+
+        try:
+            if Path(profile_path).exists():
+                with open(profile_path, 'r') as f:
+                    profile_data = yaml.safe_load(f)
+                self.game_profile = GameProfile.from_dict(profile_data)
+                print(f"[COORDINATOR] Loaded game profile: {self.game_profile.display_name}")
+                return self.game_profile
+            else:
+                print(f"[COORDINATOR] Game profile not found: {profile_path}")
+                return None
+        except Exception as e:
+            print(f"[COORDINATOR] Failed to load game profile: {e}")
+            return None
+
     async def initialize(self):
         """Initialize all subsystems."""
         print("[COORDINATOR] Initializing Local PC (Spinal Cord)...")
+
+        # Load game profile
+        self._load_game_profile()
 
         # Initialize capture
         if self.config.enable_capture:
@@ -113,10 +147,15 @@ class LocalCoordinator:
 
         # Initialize vision
         if self.config.enable_vision:
+            # Use game profile model override if specified
+            model_path = self.config.game.model_path or self.config.vision.model_path
+
             self.vision = VisionSystem(
-                model_path=self.config.vision.model_path,
+                model_path=model_path,
                 confidence_threshold=self.config.vision.confidence_threshold,
-                device=self.config.vision.device
+                device=self.config.vision.device,
+                game_profile=self.game_profile,
+                download_dir=self.config.game.download_dir
             )
             print("[COORDINATOR] Vision system initialized")
 

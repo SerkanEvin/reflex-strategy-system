@@ -26,6 +26,106 @@ class DetectionType(Enum):
     MARKET = "market"
     OTHER = "other"
 
+    @classmethod
+    def from_string(cls, value: str) -> "DetectionType":
+        """Convert string to DetectionType, case-insensitive."""
+        for member in cls:
+            if member.value.lower() == value.lower():
+                return member
+        return cls.OTHER
+
+
+@dataclass
+class ClassMapping:
+    """Maps a YOLO class ID to a DetectionType with metadata."""
+    yolo_class_id: int
+    detection_type: DetectionType
+    label: str
+    behavior: Optional[str] = None
+    confidence_threshold: Optional[float] = None
+
+
+@dataclass
+class Behavior:
+    """Defines behavior for a class category."""
+    action: str  # APPROACH, RETREAT, AVOID, etc.
+    interact_key: Optional[str] = None
+    parameters: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class GameProfile:
+    """Profile configuration for a specific game."""
+    name: str
+    display_name: str
+    description: str
+    dataset_path: Optional[str] = None
+    download_url: Optional[str] = None
+
+    # Mappings and behaviors
+    class_mappings: Dict[int, ClassMapping] = None
+    behaviors: Dict[str, Behavior] = None
+
+    def __post_init__(self):
+        if self.class_mappings is None:
+            self.class_mappings = {}
+        if self.behaviors is None:
+            self.behaviors = {}
+
+    def get_detection_type(self, yolo_class_id: int) -> DetectionType:
+        """Get DetectionType for a YOLO class ID."""
+        mapping = self.class_mappings.get(yolo_class_id)
+        return mapping.detection_type if mapping else DetectionType.OTHER
+
+    def get_label(self, yolo_class_id: int) -> str:
+        """Get label for a YOLO class ID."""
+        mapping = self.class_mappings.get(yolo_class_id)
+        return mapping.label if mapping else "unknown"
+
+    def get_behavior(self, yolo_class_id: int) -> Optional[Behavior]:
+        """Get behavior for a YOLO class ID."""
+        mapping = self.class_mappings.get(yolo_class_id)
+        if mapping and mapping.behavior:
+            return self.behaviors.get(mapping.behavior)
+        return None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "GameProfile":
+        """Create GameProfile from dictionary."""
+        profile_data = data.get("profile", {})
+        model_data = data.get("model", {})
+        class_mapping_data = data.get("class_mapping", {})
+        behaviors_data = data.get("behaviors", {})
+
+        class_mappings = {}
+        for class_id_str, mapping_info in class_mapping_data.items():
+            class_id = int(class_id_str)
+            class_mappings[class_id] = ClassMapping(
+                yolo_class_id=class_id,
+                detection_type=DetectionType.from_string(mapping_info.get("detection_type", "other")),
+                label=mapping_info.get("label", "unknown"),
+                behavior=mapping_info.get("behavior"),
+                confidence_threshold=mapping_info.get("confidence_threshold")
+            )
+
+        behaviors = {}
+        for behavior_name, behavior_info in behaviors_data.items():
+            behaviors[behavior_name] = Behavior(
+                action=behavior_info.get("action", "NONE"),
+                interact_key=behavior_info.get("interact_key"),
+                parameters=behavior_info.get("parameters")
+            )
+
+        return cls(
+            name=profile_data.get("name", "default"),
+            display_name=profile_data.get("display_name", "Default"),
+            description=profile_data.get("description", "Default game profile"),
+            dataset_path=model_data.get("dataset_path"),
+            download_url=model_data.get("download_url"),
+            class_mappings=class_mappings,
+            behaviors=behaviors
+        )
+
 
 @dataclass
 class BoundingBox:
