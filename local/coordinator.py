@@ -28,6 +28,8 @@ from client import VPSClient
 from config import LocalConfig
 from debug import init_debug_mode, get_debug_logger, DebugUI, log_debug, log_debug_action
 from shared.models import GameProfile
+from exploration import ExplorationTracker
+from discovery import AutoDiscovery
 import yaml
 
 
@@ -89,6 +91,10 @@ class LocalCoordinator:
         self.debug_logger = None
         self.debug_ui = None
         self.last_action_record: Optional[Dict[str, Any]] = None
+
+        # Exploration and discovery systems
+        self.exploration_tracker: Optional[ExplorationTracker] = None
+        self.auto_discovery: Optional[AutoDiscovery] = None
 
         # Initialize debug mode if enabled
         if self.config.debug_mode:
@@ -174,6 +180,20 @@ class LocalCoordinator:
             await self._initialize_vps_client()
             print("[COORDINATOR] VPS client initialized")
 
+        # Initialize exploration tracker
+        if self.config.enable_vision:
+            self.exploration_tracker = ExplorationTracker(
+                grid_size=50.0,
+                fog_radius=1,
+                max_cached_cells=10000
+            )
+            print("[COORDINATOR] Exploration tracker initialized")
+
+        # Initialize auto discovery
+        if self.config.enable_vision:
+            self.auto_discovery = AutoDiscovery()
+            print("[COORDINATOR] Auto discovery initialized")
+
         print("[COORDINATOR] All systems initialized")
 
     async def _initialize_vps_client(self):
@@ -229,7 +249,37 @@ class LocalCoordinator:
         # 3. Estimate player state
         player_state = await self._estimate_player_state(frame, detections)
 
-        # 4. Instinct - Security assessment
+        # 4. Update exploration tracker with player position
+        if self.exploration_tracker:
+            position = player_state.position if player_state.position else {"x": 0, "y": 0, "z": 0}
+            exploration_result = self.exploration_tracker.update_position(
+                position=position,
+                detections=[d.to_dict() for d in detections]
+            )
+            if self.config.log_detections and exploration_result.get("new_cell"):
+                print(f"[EXPLORATION] New cell at {exploration_result.get('grid')}")
+
+        # 5. Process auto-discovery for detected locations
+        discovered_locations = []
+        if self.auto_discovery and detections:
+            player_pos = player_state.position if player_state.position else {"x": 0, "y": 0, "z": 0}
+            discovered_locations = self.auto_discovery.process_frame(
+                detections=[d.to_dict() for d in detections],
+                player_position=player_pos
+            )
+            if discovered_locations:
+                print(f"[AUTO-DISCOVERY] Found {len(discovered_locations)} new potential locations")
+                # Log detected locations
+                if self.debug_logger:
+                    for loc in discovered_locations:
+                        log_debug("discovery", "coordinator", {
+                            "location_id": loc.location_id,
+                            "location_type": loc.location_type.value,
+                            "label": loc.label,
+                            "confidence": loc.confidence
+                        }, ["discovery"])
+
+        # 6. Instinct - Security assessment
         security_tier = SecurityTier.SECURE
         reflex_command = None
         active_targets = []
@@ -244,7 +294,7 @@ class LocalCoordinator:
                 if d.detection_type.value == "enemy"
             ]
 
-        # 5. Build local state
+        # 7. Build local state
         self.frame_id += 1
         self.latest_state = LocalState(
             timestamp=time.time(),
@@ -264,10 +314,10 @@ class LocalCoordinator:
                 security_tier=security_tier.value
             )
 
-        # 6. Decision - Reflex vs Strategy
+        # 8. Decision - Reflex vs Strategy
         await self._make_decision(reflex_command, security_tier)
 
-        # 7. Send state update to VPS (throttled)
+        # 9. Send state update to VPS (throttled)
         current_time = time.time()
         if (self.vps_client and
             self.vps_client.is_connected() and
@@ -452,7 +502,7 @@ class LocalCoordinator:
 
     def get_stats(self) -> Dict[str, Any]:
         """Get coordinator statistics."""
-        return {
+        stats = {
             "frames_processed": self.stats.frames_processed,
             "detections_made": self.stats.detections_made,
             "reflex_executed": self.stats.reflex_commands_executed,
@@ -461,6 +511,24 @@ class LocalCoordinator:
             "uptime": time.time() - self.stats.start_time,
             "vps_connected": self.vps_client.is_connected() if self.vps_client else False
         }
+
+        # Add exploration statistics if available
+        if self.exploration_tracker:
+            exploration_status = self.exploration_tracker.get_exploration_status()
+            stats["exploration"] = {
+                "total_cells_seen": exploration_status.get("total_cells_seen", 0),
+                "estimated_total_cells": exploration_status.get("estimated_total_cells", 0),
+                "visited_percent": exploration_status.get("visited_percent", 0),
+                "explored_percent": exploration_status.get("explored_percent", 0),
+                "total_discoveries": exploration_status.get("total_discoveries", {})
+            }
+
+        # Add discovery statistics if available
+        if self.auto_discovery:
+            discovery_stats = self.auto_discovery.get_statistics()
+            stats["discovery"] = discovery_stats
+
+        return stats
 
 
 def main():
